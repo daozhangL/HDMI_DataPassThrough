@@ -15,138 +15,119 @@
 import os, sys, math
 from PyQt5.QtWidgets import *
 from PyQt5.QtGui import *
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import *
 from numpy import random
 import configparser
+from queue import Queue
+import struct
+
+class ImageGenerator(QThread):
+    def __init__(self, fileinfo:str, datain:bytes, imagesize:QSize, qout:Queue):
+        super(ImageGenerator, self).__init__()
+        self.infor = fileinfo
+        self.data = datain
+        self.size = imagesize
+        self.outque = qout
+        self._value = struct.pack("<HI{}s".format(len(self.infor)), len(self.infor), len(self.data),
+                                  self.infor.encode("utf-8")) + self.data
+        self._pos = 0
+        self._framenum = len(self._value)//(self.size.height()*self.size.width()-32-4)
+        self.imagecorner = [[qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(0, 0, 0),qRgb(255, 255, 255)],
+                           [qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(0, 0, 0),qRgb(255, 255, 255)],
+                           [qRgb(0, 0, 0),      qRgb(0, 0, 0),      qRgb(0, 0, 0),qRgb(255, 255, 255)],
+                           [qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(255, 255, 255)]]
+
+    def _datatoimage(self):
+        frameImage = QImage(self.size, QImage.Format_RGB888)
+        try:
+            for row in range(self.size.height()):
+                for col in range(self.size.width()):
+                    if row < 4 and col < 4:
+                        continue
+                    elif row >= self.size.height()-4 and col >= self.size.width()-4:
+                        continue
+                    elif row == 0 and col>=4 and col<8:
+                        v = struct.pack("I", self._framenum)
+                        r = v[row-4] & 0xe0
+                        g = (v[row-4] << 3) & 0xe0
+                        b = (v[row-4] << 6) & 0xc0
+                        frameImage.setPixel(col, row, qRgb(r,g,b))
+                    else:
+                        v = self.data[self._pos]
+                        self._pos += 1
+                        r = v & 0xe0
+                        g = (v << 3) & 0xe0
+                        b = (v << 6) & 0xc0
+                        frameImage.setPixel(col, row, qRgb(r,g,b))
+        # except Exception as e:
+        #     print(e)
+        finally:
+            for row in range(4):
+                for col in range(4):
+                    frameImage.setPixel(col, row, self.imagecorner[row][col])
+                    frameImage.setPixel(self.size.width() - col - 1, self.size.height() - row - 1, self.imagecorner[row][col])
+            self._framenum -= 1
+            return self._pos, frameImage
+
+    def run(self):
+        while True:
+            n, img = self._datatoimage()
+            self.outque.put([n, img])
+            # print(n, len(self.data), self.outque.qsize())
+            if n == len(self.data):
+                break
 
 
 class Drawing(QWidget):
-    progress_signal = pyqtSignal(float)
-    drawstatuschange_signal = pyqtSignal(bool)
+    progress_signal = pyqtSignal(int)
+    drawstatuschange_signal = pyqtSignal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, imageque:Queue, parent=None):
         super(Drawing, self).__init__(parent)
         self.resize(300, 200)
         self.setWindowTitle("在窗口中画图")
-        self.data = b''
-        self._framestart = 0
-        self._frameend = 0
+        self.imageque = imageque
+        self.datalen = 1
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.paintNextFrame)
         self.autofreshEn = False
-        self.goingstatus = False
+        self.goingstatus = 0
         # self.setWindowFlag(Qt.WindowStaysOnTopHint)
         self.lbl_image = QLabel(self)
         self.lbl_image.move(0, 0)
         self.lbl_image.resize(self.size())
 
     def reset(self):
-        self._framestart = 0
-        self._frameend = 0
         self.timer.stop()
-        self.goingstatus = False
+        self.goingstatus = 0
         self.drawstatuschange_signal.emit(self.goingstatus)
-        self.progress_signal.emit(int(100 * self._frameend / len(self.data)))
+        self.progress_signal.emit(0)
         self.update()
-
-    def _dataToImage(self):
-        frameImage = QImage(self.size(), QImage.Format_RGB888)
-        for n, v in enumerate(self.data[self._framestart:self._frameend]):
-            r = v&0xe0
-            g = (v<<3)&0xe0
-            b = (v<<6)&0xc0
-            pix = qRgb(r, g, b)
-            row = n//self.width()
-            col = n-row*self.width()
-            frameImage.setPixel(col, row, pix)
-        return frameImage
-
-    def paintImage(self):
-        image = self._dataToImage()
-        self.lbl_image.resize(self.size())
-        self.lbl_image.setPixmap(QPixmap.fromImage(image))
-
-    # def paintEvent(self, event):
-        # # 初始化绘图工具
-        # qp = QPainter()
-        # # 开始绘图
-        # qp.begin(self)
-        # self.drawPoints(qp)
-        # # paint over
-        # qp.end()
-
-    def drawPoints(self, qp):
-        qp.setPen(Qt.red)
-        for n, v in enumerate(self.data[self._framestart:self._frameend]):
-            for ibit in range(8):
-                if (v&0x80) == 0x80:
-                    y = (n*8 + ibit)//self.width()+1
-                    x = (n*8 + ibit)-self.width()*(y-1)
-                    qp.drawPoint(x, y)
-
-    # def __getdataframe(self):  #don`t surport get previous frame
-    #     startpos = 0
-    #     while startpos < len(self.data):
-    #         framelen = self.width() * self.height() // 8
-    #         yield self.data[startpos: startpos + framelen]
-    #         startpos += framelen
 
     def show(self):
         QWidget.show(self)
         self.raise_()
 
-    def __getnextframe(self):
-        framelen = self.width() * self.height()
-        if self._frameend >= len(self.data):
-            raise IndexError("data index out of range")
-        self._framestart = self._frameend
-        self._frameend = self._framestart + framelen
-        if self._frameend > len(self.data):
-            self._frameend = len(self.data)
-        self.progress_signal.emit(int(100*self._frameend/len(self.data)))
-        # print(self._framestart, self._frameend, len(self.data), int(100*self._frameend/len(self.data)))
-
-    def __getprevframe(self):
-        framelen = self.width() * self.height()
-        self._frameend = self._framestart
-        self._framestart = self._frameend - framelen if self._frameend > framelen else 0
-        if self._framestart == 0:
-            self._frameend = self._framestart + framelen
-        self.progress_signal.emit(int(100*self._frameend / len(self.data)))
-        # print(self._framestart, self._frameend)
-
-    def setData(self, data:bytes):
-        self.data = data
-
     def paintNextFrame(self):
         try:
-            self.__getnextframe()
-            self.paintImage()
+            self.lbl_image.resize(self.size())
+            n, img = self.imageque.get(timeout=1)
+            self.lbl_image.setPixmap(QPixmap.fromImage(img))
             # self.repaint()
             self.update()
-        except:
-            QMessageBox.information(self, "Message", "all data transmit over!", QMessageBox.Yes, QMessageBox.Yes)
-            self.goingstatus = False
+            self.progress_signal.emit(100*(n)/self.datalen)
+            if n == self.datalen:
+                raise EOFError
+        except Exception as e:
+            # QMessageBox.information(self, "Message", "all data transmit over!", QMessageBox.Yes, QMessageBox.Yes)
+            self.goingstatus = 0
             self.drawstatuschange_signal.emit(self.goingstatus)
             self.timer.stop()
-
-    def paintPrevFrame(self):
-        try:
-            self.__getprevframe()
-            self.paintImage()
-            self.repaint()
-            # self.update()
-        except:
-            QMessageBox.information(self, "Message", "this is first data frame!", QMessageBox.Yes, QMessageBox.Yes)
-            # self.timer.stop()
 
     def keyPressEvent(self, event: QKeyEvent):
         if (event.key() == Qt.Key_Right) or (event.key() == Qt.Key_Down) or (event.key() == Qt.Key_Space):
             # print("next")
             self.paintNextFrame()
-        elif (event.key() == Qt.Key_Left) or (event.key() == Qt.Key_Up):
-            # print("prev")
-            self.paintPrevFrame()
         else:
             QWidget.keyPressEvent(self, event)
 
@@ -157,23 +138,30 @@ class Drawing(QWidget):
 
     def timerstart(self, sec):
         if sec > 0 and self.autofreshEn:
-            self.goingstatus = True
+            self.goingstatus = 1
             self.drawstatuschange_signal.emit(self.goingstatus)
             self.timer.start(int(1000*sec))
 
     def timerstop(self):
         self.autofreshEn = False
-        self.goingstatus = False
+        self.goingstatus = 2
         self.drawstatuschange_signal.emit(self.goingstatus)
         self.timer.stop()
 
+    def timercontinue(self):
+        self.autofreshEn = True
+        self.goingstatus = 1
+        self.drawstatuschange_signal.emit(self.goingstatus)
+        self.timer.start()
+
 
 class ControlPanel(QWidget):
+    Qimg = Queue(300)
+
     def __init__(self, parent=None):
         super(ControlPanel, self).__init__(parent)
         self.config = configparser.ConfigParser()
-
-        self.canvas = Drawing()
+        self.canvas = Drawing(self.Qimg)
         self.setupUI()
         self.getConfig()
 
@@ -301,13 +289,17 @@ class ControlPanel(QWidget):
                     # self.canvas.reset()
                     size = os.path.getsize(self.getfiledir())
                     with open(self.getfiledir(), "rb") as f:
+                        self.imggenerator = ImageGenerator(os.path.basename(self.getfiledir()), f.read(size), self.canvas.size(), self.Qimg)
+                        self.imggenerator.start(priority=QThread.HighestPriority)
+                        self.canvas.datalen = size
                         self.canvas.autofreshEn = True
-                        self.canvas.setData(f.read(size))
                         self.canvas.timerstart(self.getperiod())
                 except:
                     raise
-        else:
+        elif self.btn_start.text() == "STOP":
             self.canvas.timerstop()
+        else:
+            self.canvas.timercontinue()
 
     def changePeriod(self):
         # print("get signal")
@@ -315,12 +307,13 @@ class ControlPanel(QWidget):
         self.canvas.autofreshEn = True
         self.canvas.timerstart(self.getperiod())
 
-    def btn_start_reverse(self, canvasstatus:bool):
-        if canvasstatus:
-            self.btn_start.setText("STOP")
-        else:
+    def btn_start_reverse(self, canvasstatus:int):
+        if canvasstatus == 0:
             self.btn_start.setText("START")
-
+        elif canvasstatus == 1:
+            self.btn_start.setText("STOP")
+        elif canvasstatus == 2:
+            self.btn_start.setText("CONTINUE")
 
 
 if __name__ == '__main__':
