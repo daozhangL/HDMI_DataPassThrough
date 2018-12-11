@@ -1,0 +1,1 @@
+D:\Anaconda3\Scripts\pyinstaller.exe -F -w ImageToData.py
