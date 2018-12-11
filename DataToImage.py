@@ -31,41 +31,45 @@ class ImageGenerator(QThread):
         self._value = struct.pack("<HI{}s".format(len(self.infor)), len(self.infor), len(self.data),
                                   self.infor.encode("utf-8")) + self.data
         self._pos = 0
-        self._framenum = len(self._value)//(self.size.height()*self.size.width()-32-4)
-        self.imagecorner = [[qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(0, 0, 0),qRgb(255, 255, 255)],
-                           [qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(0, 0, 0),qRgb(255, 255, 255)],
-                           [qRgb(0, 0, 0),      qRgb(0, 0, 0),      qRgb(0, 0, 0),qRgb(255, 255, 255)],
-                           [qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(255, 255, 255),qRgb(255, 255, 255)]]
+        self._framenum = len(self._value)//(self.size.height()*self.size.width()//9-2-4-2)*8
+        self.imagecorner = [[qRgb(255, 255, 255), qRgb(0, 0, 0),       qRgb(255, 255, 255)],
+                            [qRgb(0, 0, 0),       qRgb(0, 0, 0),       qRgb(255, 255, 255)],
+                            [qRgb(255, 255, 255), qRgb(255, 255, 255), qRgb(255, 255, 255)]]
 
     def _datatoimage(self):
         frameImage = QImage(self.size, QImage.Format_RGB888)
         try:
-            for row in range(self.size.height()):
-                for col in range(self.size.width()):
-                    if row < 4 and col < 4:
+            for row in range(self.size.height()//3):
+                for col in range(self.size.width()//3):
+                    if row == 0 and col == 0:
                         continue
-                    elif row >= self.size.height()-4 and col >= self.size.width()-4:
+                    elif row == self.size.height()//3-1 and col == self.size.width()//3-1:
                         continue
-                    elif row == 0 and col>=4 and col<8:
+                    elif row == 0 and 1 <= col < 5:
                         v = struct.pack("I", self._framenum)
-                        r = v[row-4] & 0xe0
-                        g = (v[row-4] << 3) & 0xe0
-                        b = (v[row-4] << 6) & 0xc0
-                        frameImage.setPixel(col, row, qRgb(r,g,b))
+                        r = v[col-1] & 0xe0
+                        g = (v[col-1] << 3) & 0xe0
+                        b = (v[col-1] << 6) & 0xc0
+                        for irow in range(3):
+                            for icol in range(3):
+                                frameImage.setPixel(3*col+icol, 3*row+irow, qRgb(r, g, b))
                     else:
                         v = self.data[self._pos]
                         self._pos += 1
                         r = v & 0xe0
                         g = (v << 3) & 0xe0
                         b = (v << 6) & 0xc0
-                        frameImage.setPixel(col, row, qRgb(r,g,b))
+                        for irow in range(3):
+                            for icol in range(3):
+                                frameImage.setPixel(3*col+icol, 3*row+irow, qRgb(r,g,b))
         # except Exception as e:
         #     print(e)
         finally:
-            for row in range(4):
-                for col in range(4):
+            for row in range(3):
+                for col in range(3):
                     frameImage.setPixel(col, row, self.imagecorner[row][col])
-                    frameImage.setPixel(self.size.width() - col - 1, self.size.height() - row - 1, self.imagecorner[row][col])
+                    frameImage.setPixel(self.size.width()//3*3 - col - 1, self.size.height()//3*3 - row - 1,
+                                        self.imagecorner[row][col])
             self._framenum -= 1
             return self._pos, frameImage
 
